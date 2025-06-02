@@ -1,0 +1,50 @@
+vim: set filetype=nroff:
+
+
+
+
+[Examples]
+
+.SS
+Keyboard Activation
+
+In addition to invoking gmenu3 from the shell prompt, you may consider
+assigning a global hotkey to start the menu. Linux Desktop environments
+provide many different ways to do this. Refer to the documentation of
+your keyboard manager for instructions. For Fatdog64 look up the Sven
+Multimedia Keyboard Manager icon that sits in the panel.
+
+.SS
+Click Activation
+
+Here is a sample shell script for X11 systems that invokes gmenu3 when the
+user right-clicks on a free area of the root window. The script will not be
+able to detect clicks if another application--such as a window manager like
+Openbox--is already monitoring the root window.
+
+.EX
+#!/bin/sh
+
+# This script intercepts button-3 (right) clicks on the X11
+# root window, invoking $MENU when the button is released.
+
+MENU=gmenu3
+
+pid=$(pgrep -xU $(id -u) "${0##*}")
+if [ -n "$pid" ]; then
+	echo "${0##*/} is already running (pid $pid)"
+	exit
+fi
+
+trap "pkill -P $$ -x xev" HUP INT ALRM TERM 0
+
+xev -root -event button -event owner_grab_button |
+grep --line-buffered -A3 "ButtonRelease.*YES" |
+while read EVENT; do
+	case "$EVENT" in
+		*'0,'*'button 3'*) ( $MENU >/dev/null 2>&1 & ) ;;
+	esac
+done &
+
+wait $!
+

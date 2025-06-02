@@ -1,0 +1,1134 @@
+#!/bin/sh
+
+# gmenu3 - GTK XDG Application Menu for Fatdog64 Linux
+# (C)2025 step <https://github.com/step->
+# License: GNU GPLv2
+# Homepage: https://github.com/step-/gmenu3
+# Depend: gtkmenuplus >= 2.2.0 https://github.com/step-/gtkmenuplus [>903]
+# Depend: makesymlinks >= 1.0.0 https://github.com/step-/makesymlinks [>903]
+# Depend: gawk, find, realpath, sed, xargs
+# Suggest: findnrun >= 4.0.3 https://github.com/step-/find-n-run [=903]
+#
+# [=903] Preinstalled in Fatdog64-903.
+# [>903] Preinstalled in the Fatdog64 version coming after 903.
+
+VERSION=1.0.0
+
+AWK=${AWK:-gawk}    # use POSIX awk + '\x' escapes (in mawk and bb awk)
+GAWK=${GAWK:-gawk}  # use gawk-only extension (not in mawk nor bb awk)
+GTKMENUPLUS=${GTKMENUPLUS:-gtkmenuplus}
+MAKESYMLINKS=${MAKESYMLINKS:-makesymlinks}
+
+h="${XDG_CONFIG_DIRS%%:*}"
+h="${h:-/etc/xdg}/${XDG_MENU_PREFIX}menus"
+MAIN_MENU_XML="${MAIN_MENU_XML:-"$h/applications.menu"}"
+MENU_SPECS_DIR="${MAIN_MENU_XML%/*}"
+
+DEBUG=''   # set non-empty for interactive trace
+
+# ----------------------------------------------------------------------
+CACHE_DIR="${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}/gmenu3_$USER"
+CONFIG="${XDG_CONFIG_HOME:-"${HOME:?}/.config"}/gmenu3.env"
+# ----------------------------------------------------------------------
+
+die() { printf "%s: %s\n" "$0" "$*"; exit 1; }
+
+#[[[1]]] INITIALIZE / READ USER PREFERENCES
+
+# Create/read the user-preference file. [[[1
+[ -e "$CONFIG" ] || : > "$CONFIG"; . "$CONFIG"
+$AWK -v "HOME=$HOME" -v "CACHE_DIR=${CACHE_DIR:?}" '###awk
+/^[ \t]*IGNORE_NODISPLAY=/         { f1=1 }
+/^[ \t]*SHOW_ICON=/                { f2=1 }
+/^[ \t]*CACHE_MENU=/               { f3=1 }
+/^[ \t]*NO_CATEGORY_SUBMENU=/      { f4=1 }
+/^[ \t]*ACTIVATION_SUBMENU=/       { f5=1 }
+/^[ \t]*ACTIVATION_LOGFILE=/       { f6=1 }
+/^[ \t]*SELECTION_HOTKEY=/         { f7=1 }
+/^[ \t]*ICON_SIZE=/                { f8=1 }
+/^[ \t]*CONTROL_PANEL_SUBMENU=/    { f9=1 }
+/^[ \t]*LABEL_STYLE=/              { fA=1 }
+/^[ \t]*TOOLTIP_STYLE=/            { fB=1 }
+/^[ \t]*SEARCH_APP=/               { fC=1 }
+/^[ \t]*XY_POSITION=/              { fD=1 }
+END {
+	#
+	# Settings in the conff==$CONFIG file win over the first-run settings below:
+	#
+	conff = ARGV[1]
+	confd = conff
+	restart_notice="# Changing this value requires a restart with \x27gmenu3 --new-cache\x27."
+	sub("/[^/]+$", "", confd)
+	if(!f1) {
+		print "# Leave unset => Hide concealed apps.">>conff
+		print "IGNORE_NODISPLAY=">>conff
+	}
+	if(!f2) {
+		print "# Leave unset => Hide icons.">>conff
+		print "# Hiding icons significantly improves time-to-popup.">>conff
+		print "SHOW_ICON=1">>conff
+	}
+	if(!f3) {
+		print "# Leave unset => Rebuild the menu each time it is displayed.">>conff
+		print "# Time-to-popup will increase slightly but the menu will always be up-to-date.">>conff
+		print "CACHE_MENU=1">>conff
+	}
+	if(!f4) {
+		print "# Leave unset => Hide the \"No Category\" submenu unless it is empty.">>conff
+		print "NO_CATEGORY_SUBMENU=">>conff
+	}
+	if(!f5) {
+		print "# Leave unset => Hide the \"Recent\" submenu unless it is empty.">>conff
+		print "ACTIVATION_SUBMENU=">>conff
+	}
+	if(!f6) {
+		print "# Menu entry activation log. Remove the file to clear the log.">>conff
+		print restart_notice >>conff
+		print "ACTIVATION_LOGFILE=\"" confd"/gmenu3.log\"">>conff
+	}
+	if(!f7) {
+		print "# Leave unset => Do not add hotkey mark (underline) to the menu items.">>conff
+		print restart_notice >>conff
+		print "SELECTION_HOTKEY=1">>conff
+	}
+	if(!f8) {
+		print "# Menu entry icon size (typically 16, 24, 32 pixels).">>conff
+		print restart_notice >>conff
+		print "ICON_SIZE=24">>conff
+	}
+	if(!f9) {
+		print "# Leave unset => Do not embed the Fatdog64 Control Panel as a submenu." >>conff
+		print "# By default this submenu is disabled to avoid adding time overhead." >>conff
+		print "# Enabling this submenu is best done with CACHE_MENU enabled." >>conff
+		print restart_notice >>conff
+		print "CONTROL_PANEL_SUBMENU=">>conff
+	}
+	if(!fA) {
+		print "# Pango markup span attributes to change label font family and style.">>conff
+		print "# Refer to <https://docs.gtk.org/Pango/pango_markup.html#the-span-attributes>.">>conff
+		print "# These attributes apply globally to the menu labels.">>conff
+		print "# Use hyphens instead of underscores for attribute names. For example:">>conff
+		print "#    LABEL_STYLE=\"font-desc=\x27Sans Italic 16\x27 variant=\x27small-caps\x27\"">>conff
+		print restart_notice >>conff
+		print "LABEL_STYLE=\"\"">>conff
+	}
+	if(!fB) {
+		print "# Similar to LABEL_STYLE. Attributes apply globally to tooltips.">>conff
+		print restart_notice >>conff
+		print "TOOLTIP_STYLE=\"\"">>conff
+	}
+	if(!fC) {
+		print "# Search application.">>conff
+		print restart_notice >>conff
+		print "SEARCH_APP=\"findnrun\"">>conff
+	}
+	if(!fD) {
+		print "# Leave empty => Pop up at mouse pointer.">>conff
+		print "# Fixed position example: XY_POSITION=\"400 0\"">>conff
+		print restart_notice >>conff
+		print "XY_POSITION=\"\"">>conff
+	}
+	close(conff)
+}
+###awk' "$CONFIG" && . "$CONFIG" || die "Cannot process '$CONFIG'"
+
+command -v "${SEARCH_APP%% *}" > /dev/null || SEARCH_APP=
+
+#[[[1]]] GET OPTIONS
+
+usage() { #[[[2
+	gettext -- 'Usage:'
+	printf " %s %s\n" "$0" '[--clear-cache | --new-cache]'
+	printf "\n%s"
+	gettext 'Display the application menu conforming to the XDG Menu Specification.'
+	printf "\n\n%s" '<https://specifications.freedesktop.org/menu-spec/latest/>'
+	printf "\n\n"; gettext 'Options:'
+	printf "\n  --clear-cache\t"; gettext 'clear the cache and exit.'
+	printf "\n  --new-cache\t";   gettext 'clear the cache then show the menu.'
+	printf "\n  --version\t";     gettext 'print version and exit.'
+	printf "\n\n"; gettext 'Environment:'
+	printf "\n  MAIN_MENU_XML:\t%s" "$MAIN_MENU_XML"
+	printf "\n\n"; gettext 'Files:'
+	printf "\n  "; gettext 'User preferences:'; printf "\t%s" "$CONFIG"
+	printf "\n  "; gettext 'Recently-used:'; printf "\t%s " "$ACTIVATION_LOGFILE"
+	[ "$ACTIVATION_LOGFILE" ] && gettext '(enabled)' || gettext '(disabled)'
+	printf "\n\n$(gettext 'Written by %s.')\n" 'step'
+	printf "\n$(gettext 'Report bugs at %s.')\n" '<https://github.com/step-/gmenu3/issues>'
+	gettext 'The specification is partially implemented; just enough to fully support Fatdog64 Linux.'
+	printf "\n\nCopyright (C) %s %s\n" '2025' 'step <https://github.com/step->.'
+	gettext 'This is free software licensed under the GPL2 license.'
+	echo
+}
+
+opt_clear_cache= opt_new_cache=
+case "$1" in
+	'') : ;;
+	--clear-cache) opt_clear_cache=1; shift ;;
+	--new-cache) opt_new_cache=1; shift ;;
+	--version) echo $VERSION; exit ;;
+	*) usage; exit ;;
+esac
+
+if [ -n "$opt_clear_cache" ]; then
+	rm -fr "${CACHE_DIR:?}"
+	exit $?
+fi
+if [ -n "$opt_new_cache" ]; then
+	rm -fr "${CACHE_DIR:?}" || die "Quitting"
+fi
+
+#######################################################################
+#         LATER RUN: FAST TRACK TO DISPLAY THE CACHED MENU            #
+#######################################################################
+
+# The activation submenu is read from ~/.gmenu3.log, which is maintained
+# by the `activationlogfile` gtkmenuplus directive.
+filter_activation_submenu() { #[[[2
+	[ 0 != "$ACTIVATION_SUBMENU" -a -s "$ACTIVATION_LOGFILE" ] || return 0
+	LANG=C $AWK -v NOW=`date +%s` '###awk
+/^#{[0-9:]+}/ {
+	start = NR
+	exclude = 0
+	++n
+	split(substr($0, 3, index($0, "}") - 3), meta, /:/)
+	# meta[1] internal
+	# meta[2] invocation count
+	# meta[3] creation date
+	# meta[4] activation date
+}
+# Within an `activationlogfile` record: check if an exclusion case applies.
+/^#{[0-9:]+}/,/^#\{}/ {
+	if (!exclude) {
+		a[n, NR - start] = $0
+		# The exclusion cases are:
+		# - pattern @exclude@ matches a `cmd` in $THIS_FILE_
+		# - `cmd` not activated for at least 10 days
+		# - `cmd` is a Fatdog64 system reboot command
+		if ($0 ~ /@exclude@/ || NOW - meta[4] > 864000 || $0 ~ /Cmd=(wmexit |Suspend$)/) {
+			exclude = 1
+			a[n, "stop"] = -1
+		}
+	}
+}
+/^#\{}/ && !exclude {
+	a[n, "stop"] = NR - start
+}
+END {
+	printf "" > ARGV[1]
+	for(i = 1; i <= n; i++) {
+		stop = a[i, "stop"]
+		for(j = 0; j <= stop; j++)
+			print a[i, j] > ARGV[1]
+	}
+}
+###awk' "$ACTIVATION_LOGFILE"
+}
+
+# Refresh the cache and show the menu. [[[2
+TMPMENU="${CACHE_DIR:?}/gmenu3"
+if [ -f "$TMPMENU" -a "$CACHE_MENU" = "1" ]; then
+	filter_activation_submenu &&
+		$GTKMENUPLUS -f "$TMPMENU"
+	#######
+	exit $?
+	#######
+
+elif [ -d "$CACHE_DIR" -a "$CACHE_MENU" != "1" ]; then
+	rm -r "$CACHE_DIR"
+	# Because user preferences indicate the cache is always to be cleared,
+	# every run is a first run, therefore we don't exit here.
+fi
+
+
+
+# [[[1]]]  NOT REACHED AFTER THE FIRST RUN
+# unless --new-cache was effected.
+
+#######################################################################
+#                   FIRST RUN: BUILD AND CACHE THE MENU               #
+#######################################################################
+
+# Dependency checks go here.
+case "$($GTKMENUPLUS --version)" in
+	1.*|2.[01].*|'')
+	printf "$0: $(gettext "Please install gtkmenuplus version >= %s.")\n" 2.2.0 >&2
+	exit 1 ;;
+esac
+for p in "${MAKESYMLINKS%% *}" "${GAWK%% *}"; do
+	if ! command -v $p > /dev/null; then
+		printf "$0: $(gettext "Please install %s.")\n" $p >&2
+		exit 1
+	fi
+done
+
+#
+### Build the cache directory, which holds symbolic links to .desktop files. [[[2
+# This block is rather long. It comprises a heredoc subshell, which
+# harvests pathnames to the .desktop files, followed by a gawk script,
+# which creates the symlinks in $CACHE_DIR ($LAUNCHER_DIRS to be precise).
+
+namef="$CACHE_DIR/zname"    # link names ending with ".desktop"
+realf="$CACHE_DIR/zreal"    # fully resolved link targets
+
+LAUNCHER_ROOT="$CACHE_DIR/L"
+mkdir -p "$LAUNCHER_ROOT" || die "Quitting"
+
+XDG_DATA_DIRS=${XDG_DATA_DIRS:-/usr/share:/usr/local/share}
+XDG_DATA_HOME=${XDG_DATA_HOME:-$HOME/.local}
+unset heredoc_status
+{
+	read ICON_DIRS
+	read DESKTOP_FILE_DIRS
+	read DESKTOP_FILE_DIRS_EXIST
+	read heredoc_status
+} << EOF
+$(
+	# heredoc_status above will be set unless
+	# this subshell ends with an error.
+	set -e
+
+	#
+	# This block sets the top three variables above
+	#
+	set -f
+	IFS=: a=applications i=icons
+	set -- ${XDG_DATA_HOME} ${XDG_DATA_DIRS}
+	for p; do [ -n "$p" ] && printf %s ":$p/$i"; done; echo
+	for p; do [ -n "$p" ] && printf %s ":$p/$a"; done; echo
+	set -- "$@" :::
+	while [ "$1" != ::: ]; do
+		p=$1; shift
+		if [ -n "$p" -a -d "$p/$a" ]; then
+			printf %s ":$p/$a"
+			set -- "$@" "$p/$a"
+		fi
+	done; echo
+	shift # :::
+
+	#
+	# This block creates the $namef and $realf files, which list
+	# accessible .desktop files within the XDG_DATA_* directories.
+	#
+	# Error management:
+	# 1. find lists .desktop files to $namef, filtering diverting access
+	#    and link loop errors to stderr, e.g. a.desktop -> a.desktop
+	# 2. realpath prefixes other access/link errors with 'realpath:'
+	#    and writes to $realf
+	#
+	touch "$namef" "$realf"
+	if [ $# -gt 0 ]; then
+		IFS=' '
+		PATH=/usr/bin:/bin
+		find -L "$@" -maxdepth 1 -name '*.desktop' |
+			tee "$namef" |
+			xargs -r realpath -e > "$realf" 2>&1
+	fi
+
+	# Set heredoc_status outside this subshell.
+	echo no-errors
+)
+EOF
+
+[ "$heredoc_status" = "no-errors" ] || die "Quitting due to phase 1 error:" \
+	"$(head -n1 "$realf") $heredoc_status"
+
+DESKTOP_FILE_DIRS=${DESKTOP_FILE_DIRS#:}
+DESKTOP_FILE_DIRS_EXIST=${DESKTOP_FILE_DIRS_EXIST#:}
+ICON_DIRS=${ICON_DIRS#:}
+
+# http://standards.freedesktop.org/icon-theme-spec/icon-theme-spec-latest.html#directory_layout
+# Additional Fatdog64-specific locations start at .../midi-icons.
+ICON_DIRS="$HOME/.icons:${ICON_DIRS}:/usr/share/pixmaps:/usr/share/midi-icons:/usr/share/mini-icons"
+
+XDG_DIRFILE_DIR=/usr/share/desktop-directories
+filter_activation_submenu
+
+#
+# This gawk script creates a bunch of directories and
+# symbolic links from the $namef and $realf files, relying
+# on makesymlinks (in fd64.sfs) for bulk symlink creation.
+#
+$GAWK '###gawk
+BEGIN {
+	nf = 0
+}
+ENDFILE {       # gawk extension
+	nR[nf] = FNR
+	nf++
+}
+!/^realpath:/ {
+	R[FNR, nf] = $0
+}
+END {
+	if (nf == 0) exit 1
+	if (nR[0] != nR[1]) exit 1 # should not happen
+
+	# Each change of named corresponds to a path argument of the previous
+	# find command, that is, a component of $DESKTOP_FILE_DIRS_EXIST.
+	# Directories and link names to the .desktop files are renamed
+	# numerically with generous zero padding (d%04d/%08d.desktop).
+	ndir = 0
+	subdirs = ""
+	for (i = 1; i <= nR[0]; i++) {
+		namef = R[i, 1]
+		named = dirname(namef)
+		if (named != prev_named) {
+			prev_named = named
+			subdirs = subdirs sprintf(" \"%s/d%04d\"", DEST, ++ndir)
+		}
+	}
+	if (subdirs == "")
+	{
+		exit
+	}
+	if (system(sprintf("rm -rf %s && mkdir -p %s", subdirs, subdirs)))
+	{
+		exit 1
+	}
+
+	makelinks = "command -p "MAKESYMLINKS" -f"
+	ndir = 0
+	for (i = 1; i <= nR[0]; i++) {
+		realf = R[i, 0]
+		namef = R[i, 1]
+		named = dirname(namef)
+		if (named != prev_named) {
+			prev_named = named
+			subd = sprintf("%s/d%04d", DEST, ++ndir)
+		}
+
+		# unless a link name in $namef was invalid
+		if (R[i,0] !~ /^realpath:/) {
+			printf "%s/%08d.desktop\n%s\n", subd, i, realf | makelinks
+		}
+	}
+
+	exit close(makelinks)
+}
+function dirname (p,   q) {
+	q = p
+	sub("/[^/]+$", "", q)
+	if (q == p) {
+		return "."
+	}
+	return q
+}
+###gawk' "DEST=$LAUNCHER_ROOT" "MAKESYMLINKS=$MAKESYMLINKS" "$realf" "$namef" ||
+	die "Quitting due to phase 2 error"
+
+#
+# Now, in its full glory, the $LAUNCHER_ROOT directory contains:
+#
+#    $LAUNCHER_ROOT
+#    ├── d0001
+#    │   ├── 00000001.desktop -> $HOME/.local/share/applications/some.desktop
+#    │   ├── 00000002.desktop -> ... (all within $HOME/.local)
+#    │   ├── ...
+#    │   ├── 00000100.desktop -> ...
+#    ├── d0002
+#    │   ├── 00000101.desktop -> /usr/share/applications/some.desktop
+#    │   ├── 00000102.desktop -> ... (all within /usr/share)
+#    │   ├── ...
+#    │   ├── 00000360.desktop -> ...
+#    ├── d0003
+#    │   ├── 00000361.desktop -> /usr/local/share/applications/some.desktop
+#    │   ├── 00000362.desktop -> ... (all within /usr/local/share)
+#    │   └── ...
+#
+
+# [[[2]]]]
+
+#
+# HOW THE MENU IS PUT TOGETHER
+# ----------------------------
+# THE KEY IDEA: A categorized application menu results from intersecting the
+# "Categories" property of the .desktop link targets with the <Category> tags of
+# the .menu files that the $MAIN_MENU_XML XML file merges in via <MergeFile>
+# tags. The intersection is calculated by the gtkmenuplus `launcherdirfile` and
+# `launcher` directives (the former providing the <Category> values, and the
+# latter the "Categories" values to be intersected).
+#
+# LAUNCHERDIRFILE PREPARATION: Because `launcherdirfile` can only process
+# .desktop-like files, before launching gtkmenuplus the .menu XML files are
+# transcribed to .desktop-like files for the `launcherdirfile` directive
+# to read. An awk script will create and write the transcriptions to a set
+# of *.directory files.
+#
+# LAUNCHER PREPARATION: Beyond the $LAUNCHER_ROOT directory, not
+# much else is needed. `launcher` will read the .desktop files in
+# the numbered subdirectories of the $LAUNCHER_ROOT directory.
+LAUNCHER_DIRS="$(echo "$LAUNCHER_ROOT/d"[0-9][0-9][0-9][0-9] | sed -e 's/ /:/g')"
+
+# MENU ADD-ONS: The menu includes some add-ons, either as submenus or embedded
+# sections. Submenu examples include the Wine, fatdog-control-panel, and "This
+# menu" submenus. The embedded section comprises various system logout entries.
+#
+
+# MENU BUILDER SCRIPT:
+# The following several blocks creates the make_menu.awk file that builds
+# the actual gtkmenuplus script. $CACHE_DIR/make_menu.awk runs only once.
+# It is deleted unless $DEBUG is set. Because make_menu.awk uses gawk's
+# extended match() function, it must be interpreted by gawk.
+
+# var:? stops if var is undefined or its value is empty
+# var? stops if var is undefined (its value can be empty)
+# sorted
+echo > "$CACHE_DIR/vars.gtkmenuplus" "\
+ACTIVATION_LOGFILE_=\"${ACTIVATION_LOGFILE:?}\"
+ACTIVATION_SUBMENU_=\"${ACTIVATION_SUBMENU?}\"
+CACHE_MENU_=\"${CACHE_MENU?}\"
+CONFIG_=\"${CONFIG:?}\"
+CONTROL_PANEL_SUBMENU_=\"${CONTROL_PANEL_SUBMENU?}\"
+DESKTOP_FILE_DIRS_=\"${DESKTOP_FILE_DIRS:?}\"
+DESKTOP_FILE_DIRS_EXIST_=\"${DESKTOP_FILE_DIRS_EXIST:?}\"
+GTKMENUPLUS_=\"${GTKMENUPLUS:?}\"
+ICON_SIZE_=\"${ICON_SIZE:?}\"
+IGNORE_NODISPLAY_=\"${IGNORE_NODISPLAY?}\"
+LABEL_STYLE_=\"${LABEL_STYLE?}\"
+LAUNCHER_DIRS_=\"${LAUNCHER_DIRS:?}\"
+LAUNCHER_ROOT_=\"${LAUNCHER_ROOT:?}\"
+MENU_SPECS_DIR_=\"${MENU_SPECS_DIR:?}\"
+NO_CATEGORY_SUBMENU_=\"${NO_CATEGORY_SUBMENU?}\"
+SEARCH_APP_=\"${SEARCH_APP?}\"
+SELECTION_HOTKEY_=\"${SELECTION_HOTKEY?}\"
+SHOW_ICON_=\"${SHOW_ICON?}\"
+TOOLTIP_STYLE_=\"${TOOLTIP_STYLE?}\"
+VERSION_=\"${VERSION:?}\"
+XDG_DIRFILE_DIR_=\"${XDG_DIRFILE_DIR:?}\"
+XY_POSITION_=\"${XY_POSITION?}\"
+"
+
+awk_read_vars="function read_vars(      f, k, s, v) { #[[[2
+	f=CACHE_DIR\"/vars.gtkmenuplus\"
+	while ((getline s < f) > 0) {
+		k = substr(s, 1, index(s, \"=\") - 2)  # chop the trailing underscore
+		v = substr(s, index(s, \"\\x22\") + 1) # chop the leading double quote
+		sub(/\"/, \"\", v)                     # and the trailing double quote
+		V[k] = v
+	}
+	return close(f) == 0
+}
+function getv(k) { return V[k] }
+"
+# i18n [[[2
+# Note: xgettext can't extract translation data from 'gettext -es' below.
+# For that you need xgettext.sh - see https://github.com/step-/i18n-table.
+export TEXTDOMAIN=fatdog
+export OUTPUT_CHARSET=UTF-8
+
+awk_read_translations="function read_translations(      f,r){ #[[[2
+f=CACHE_DIR\"/i18n\"
+r=1
+r=r&&(getline IT_hover_over <f)>0
+r=r&&(getline TT_hover_over <f)>0
+r=r&&(getline IT_checked <f)>0
+r=r&&(getline IT_unchecked <f)>0
+r=r&&(getline IT_search <f)>0
+r=r&&(getline TT_search <f)>0
+r=r&&(getline IT_concealed <f)>0
+r=r&&(getline TT_concealed <f)>0
+r=r&&(getline IT_cache <f)>0
+r=r&&(getline TT_cache <f)>0
+r=r&&(getline IT_showico <f)>0
+r=r&&(getline TT_showico <f)>0
+r=r&&(getline IT_uncat_app <f)>0
+r=r&&(getline TT_uncat_app <f)>0
+r=r&&(getline IT_activ <f)>0
+r=r&&(getline TT_activ <f)>0
+r=r&&(getline IT_no_category <f)>0
+r=r&&(getline TT_no_category <f)>0
+r=r&&(getline IT_activations <f)>0
+r=r&&(getline TT_activations <f)>0
+r=r&&(getline IT_fdcp <f)>0
+r=r&&(getline TT_fdcp <f)>0
+r=r&&(getline IT_this_menu <f)>0
+r=r&&(getline TT_this_menu <f)>0
+return r
+}
+"
+
+if ! [ -s "${CACHE_DIR:?}/i18n" ]; then #[[[2
+	gettext -es > "$CACHE_DIR/i18n" \
+"      (hover over here)\n" \
+"For help on the settings below, read the tooltips. These and more settings persist in your configuration file. You can edit the file: \n" \
+"✅\n" \
+"   \n" \
+"Search _/\n" \
+"Open a search app:\n" \
+"Show Concealed _Applications\n" \
+	"Most concealed apps are system components of little import to end users. However, experts might find one or two apps they wish to keep visible.  Hiding is recommended for normal use.\n" \
+"_Cache the Menu\n" \
+	"There is a certain amount of work involved in setting up the menu. If the cache is enabled, that work is done only once. The disadvantage is the list of displayed apps is frozen. If the cache is disabled, the set up cost is incurred each time but the advantage is changes to installed apps appear in the menu automatically.\n" \
+"Show _Icons\n" \
+	"Icons may look good and make the menu more accessible. However, with icons enabled, the menu takes longer to pop up.\n" \
+"Enable '_No Category' submenu\n" \
+	"Rarely an app does not match any of the known submenu categories. Try enabling 'No Category' if an app you know should be in the menu, is not.\n" \
+"Enable '_Recent' submenu\n" \
+	"The submenu collects recent menu entry activations allowing quick reuse of frequently-used items.\n" \
+"No Category _:\n" \
+	"The submenu displays the .desktop files that do not contain a 'Category=' value. See also 'This menu > Cache the Menu'.\n" \
+"Recent _!\n" \
+	"Recent menu entry activations saved for quick reuse.\n" \
+"Control Panel _\\\\\n" \
+	"Fatdog64 Control Panel menu.\n" \
+"This menu _*\n" \
+	"Actions to change some of the user preferences in ~/.config/gmenu3.env.\n" \
+;
+fi
+
+
+
+
+
+if [ -z "$DEBUG" ]; then #[[[2
+	enable_debug=
+else
+	enable_debug="-f ${CACHE_DIR:?}/debug.awk"
+	cat << \EOF > "$CACHE_DIR/debug.awk"
+BEGIN { DEBUG=1 }
+function dbg_step(msg,      s, appname) { # [[[2
+	appname = ARGV[0]
+	if(""==msg) msg="ENTER: run until next record | Ctrl+D: run to end | Ctrl+C: kill"
+	if("init" == _step__state) {
+		printf "\033[7m Press ENTER to start \033[0m " >DBG
+		fflush()
+		getline s < "/dev/stdin"
+		_step__state = "open"
+	}
+	printf "[% 4d](%s)\n", NR, $0 >DBG
+	if("closed" != _step__state) {
+		_step__state = "closed"
+		printf "\033[7m[% 4d] %s \033[0m ", NR, msg >DBG
+	}
+	fflush()
+	getline s < "/dev/stdin"
+	_step__state = "open"
+}
+EOF
+fi
+
+#[[[2]]]
+echo > "$CACHE_DIR/make_menu.awk" "
+$awk_read_vars
+$awk_read_translations
+"'###gawk
+BEGIN { #[[[2
+	DBG = "/dev/stderr"; _step__state = "init"
+	ERRM = "#(error) "
+	STATE = "Undefined"
+	read_vars()
+	read_translations()
+
+	print "#!" (getv("GTKMENUPLUS") !~ "^/" ? "/usr/bin/env -S " : "") getv("GTKMENUPLUS") " -f"
+	print ""
+	print "# gmenu3 - a GTK application menu for Fatdog64"
+	print "# (C) 2025 step <https://github.com/step->"
+	print "# License GNU GPL2"
+	print "# https://github.com/step-/gmenu3"
+	print ""
+	print "# Version: "getv("VERSION")
+	print ""
+	print "include = vars.gtkmenuplus"
+	print "THIS_FILE_=$0"
+	print "WINEDIR_=" ENVIRON["XDG_DATA_HOME"] "/applications/wine"
+
+	print ""
+	print "if ?= $SHOW_ICON_\nelse"
+	print "  configure = noicons nolaunchericons"
+	print "endif"
+	print ""
+	print "# Activate the log file to build loggable entries."
+	print "if ?= $ACTIVATION_SUBMENU_"
+	print "  activationlogfile = $ACTIVATION_LOGFILE_"
+	print "  activationlogexclude = @exclude@"
+	print "endif"
+	print ""
+	print "tooltipformat = $TOOLTIP_STYLE_"
+	print "menuposition = $XY_POSITION_"
+	print ""
+	print "# --------------------------------------------------------------------"
+	print "Top_ = $LAUNCHER_DIRS_"
+	print "configure = errorconsoleonly endsubmenu noicons"
+	print "configure = launchernodisplay nolaunchernullcategory"
+	print "if ?= $IGNORE_NODISPLAY_"
+	print "  configure=nolaunchernodisplay"
+	print "endif"
+	print "icondirectory = /usr/share/pixmaps"
+	print "iconsize = $ICON_SIZE_"
+	print "if ?= $SELECTION_HOTKEY_"
+	print "  format = $LABEL_STYLE_ mnemonic=\"1\""
+	print "endif"
+	print ""
+	printf "# BEGIN \x27%s\x27\n", ARGV[1]
+}
+
+# Extract hierarchy and layout of menu groups. #[[[2
+# Each group is described by its MergeFile.
+/^[[:space:]]*$/ {next}
+/<Menu>/ { STATE="Hierarchy" }
+/<Layout>/ { STATE="Layout" }
+{
+	delete a
+}
+{ if (DEBUG) dbg_step() }
+"Hierarchy" == STATE && parse_tag("Name", $0, a) {
+	curName = a[2]
+}
+"Hierarchy" == STATE && parse_tag("MergeFile", $0, a) {
+	mergeFile[curName] = a[2]
+}
+"Layout" == STATE && parse_tag("Menuname", $0, a) {
+	order[++n] = a[2] # indexing mergeFile[]
+	# TODO nested <Menuname>s such as in /etc/xdg/menus/puppy-desktop.menu
+}
+/<Separator\/[[:space:]]*>/ {
+	order[++n] = "_layout_separator"
+}
+
+END { # Lay out each menu group. [[[2
+	sep = "" # separator between menu sections
+	for(i = 1; i <= n; i++) {
+		if("_layout_separator" == order[i]) {
+			print "separator" # for valid menu layout
+			continue
+		}
+		filename = mergeFile[order[i]]
+		if(filename) {
+			if(filename == "fatdog-system-logout.menu") {
+				# Mark stop of optimization post-processing
+				print "#OPTIMIZE_END"
+
+				print "#ADD_ONS"
+				add_search_entry()
+				# Prepend additional menus before fatdog`s logout section
+				add_wine_submenu()
+				add_no_category_submenu()
+				if(getv("CONTROL_PANEL_SUBMENU")) {
+					add_fdcp803_submenu()
+				}
+				add_activation_submenu()
+				add_this_menu_submenu()
+				print "\nseparator\n"
+			}
+			group_file = getv("MENU_SPECS_DIR")"/"filename
+			layout(group_file, i)
+		} else if(0) {
+			printf "warning: No <MergeFile> for <Menu> <Name> \"%s\" in \"%s\"\n",
+				order[i], FILENAME >"/dev/stderr"
+		}
+		sep = "separator"
+	}
+	printf "# END \x27%s\x27\n", FILENAME
+}
+
+function layout(group_file, id,      rs, s, is_group_file_open, a,ai,an, dirfile, mkdir, x, z, categories, filenames) { #[[[2
+	# Return: none, but
+	# comment out gtkmenuplus commands on error.
+
+	printf "# Group %d \x27%s\x27\n", id, group_file
+
+	# This code can parse the following tag patterns: #[[[
+	# 1. <Menu> holds <Directory> && <Layout><Menuname>s
+	#	  Top level menu group container; assumed one per group_file
+	#	  Top <Directory> implies opening a submenu entry
+	#	  Directive: launchersubmenu=.
+	#	  Normally a group starts with pattern 1.
+	#	  Sample file for patterns 1+2: puppy-desktop.menu
+	# 2. <Menu> holds <Directory> && !<Layout> && (<Include><Category>)+
+	#	  Submenu contained in 1
+	#	  Directive: launcher=$Top_
+	#	  Sample file for patterns 1+2: puppy-desktop.menu
+	#	  Special case: if group _starts_ with pattern 2 we open a submenu entry anyway.
+	#	  Sample file for special case: Puppy-Development.directory
+	# 3. <Menu> holds !<Directory> && (<Layout><Filename>)+ && (<Include><Category>)+
+	#	  Directive: Item
+	#	  Since this pattern occurs only once in Fatdog`s menu hierarchy, it is
+	#	  handled with the ad-hoc function convert_filename_logout_submenu().
+	#	  An alternative implementation could pass layout() a gawk @function pointer
+	#	  to a filename-conversion function specific to each pattern-3 occurrence.
+	#	  Sample file for pattern 3: fatdog-system-logout.menu
+	#]]]
+	ops["mkdir"] = 1
+	ops["mksubmenu"] = "TRUE"
+	rs = RS; RS = "</?Menu>" # RS regex works in gawk, mawk and busybox awk
+	while(0 < (getline s < group_file)) {
+		is_group_file_open = 1
+		if(is_pattern(1, s)) { #[[[
+			if(parse_tag("Directory", s, a)) {
+				# TODO (future, maybe) parse <inline> tag
+				dirfile = getv("XDG_DIRFILE_DIR")"/"a[2]
+				x = create_dirfile(dirfile, id, 1, group_file, "", ops)
+				if("TRUE" == ops["mksubmenu"]) {
+					printf "%slaunchersubmenu=%s\n", x ? "" : ERRM, x ? x : dirfile
+					ops["mksubmenu"] = "SUCCESS"
+				}
+				dirfile = ""
+			}
+			continue
+		}
+		#]]]
+		if(is_pattern(2, s)) { #[[[
+			if(parse_tag("Directory", s, a)) {
+				dirfile = getv("XDG_DIRFILE_DIR")"/"a[2]
+			}
+			if(parse_tag("Category", s, a)) {
+				categories = implode_tag("Category", ";", a[2])
+			}
+			if(dirfile) {
+				x = create_dirfile(dirfile, id, 2, group_file, categories, ops)
+				z = (x ? "" : ERRM)
+				printf "%slauncherdirfile=%s\n", z, x
+				printf "%slauncher=$Top_\n", z
+				dirfile = ""
+			} else {
+				printf "%s creating %s\n", ERRM, dirfile
+			}
+			continue
+		}
+		#]]]
+		if(is_pattern(3, s)) { #[[[
+			if(parse_tag("Filename", s, a)) {
+				filenames = a[2]
+				an = split(filenames, a, "[[:space:]]*<Filename>|</Filename>[[:space:]]*")
+				print "configure=launcherlistfirst"
+				print "if ?= $SELECTION_HOTKEY_"
+				print "  format = $LABEL_STYLE_ mnemonic=\"z\""
+				print "endif"
+				for(ai = 1; ai <= an; ai++) {
+					if(a[ai]) {
+						print "launcher=" convert_filename_logout_submenu(a[ai])
+					}
+				}
+				print "configure=nolauncherlistfirst"
+			}
+			continue
+		}
+		#]]]
+	}
+	if(is_group_file_open) {
+		close(group_file)
+		if("SUCCESS" == ops["mksubmenu"]) {
+			print "endsubmenu"
+		}
+	} else {
+		printf "layout(): error closing \x27%s\x27\n", group_file > "/dev/stderr"
+	}
+}
+
+function create_dirfile(dirfile, id, pat_tag, group_file, categories, byValue,      na, a, newdir, newfile, rs, s) { #[[[2
+	# Return: created-dirfile-fullpath or "" on error.
+
+	if (DEBUG) {
+		print "#: create_dirfile("dirfile"," id"," pat_tag"," group_file"," categories")"
+		printf "#:"; for(s in byValue) printf " %s=%s", s, byValue[s]; print ""
+	}
+	rs = RS; RS = "\x1\x2\x3"
+	if(0 < (getline s < dirfile)) {
+		close(dirfile)
+		newdir = CACHE_DIR"/"id
+		if(byValue["mkdir"] && 0 == system("mkdir -p \""newdir"\"") || !mkdir) {
+			byValue["mkdir"] = 0
+			na = split(dirfile, a, "/")
+			newfile = newdir"/"pat_tag"_"a[na]
+			print s > newfile
+		}
+	}
+	RS = rs
+	if(newfile) {
+		if("TRUE" == byValue["mksubmenu"]) {
+			printf "launchersubmenu=%s\n", byValue["launchersubmenu"] = newfile
+			byValue["mksubmenu"] = "SUCCESS"
+		}
+		if(categories) {
+			# Save categories to pattern 2`s dirfile
+			print "Categories=" categories > newfile
+
+			# Also accumulate categories in launchersubmenu= file, a.k.a
+			# (pattern 1`s dirfile) to enable optimization {N2}
+			if(newfile != byValue["launchersubmenu"]) {
+				printf ";" categories >> byValue["launchersubmenu"]
+				close(byValue["launchersubmenu"])
+			}
+		} else {
+			# Init accumulating categories in launchersubmenu= file {N2}
+			printf "Categories=" >> byValue["launchersubmenu"]
+			close(byValue["launchersubmenu"])
+		}
+		close(newfile)
+		return newfile
+	}
+}
+
+function parse_tag(tag, buf, byRef,      a, i, rx, attr, val, k, ret) { #[[[2
+#TODO tag cannot span multiple lines
+
+	rx = "[[:space:]]*<"tag"([^>]*)>(.*)</"tag">[[:space:]]*"
+	ret = match(buf, rx, a) # gawk extension
+	if(ret) {
+		delete byRef
+		byRef["_tag"] = tag
+		byRef["_rx"] = rx
+		byRef[0] = a[0]
+		byRef[1] = attr = a[1]
+		byRef[2] = val = a[2]
+	}
+	if (DEBUG) {
+		print "  "ret" <- tag("tag")\n" >DBG
+		if(ret) for(i in a) print "    a["i"]("a[i]")" >DBG
+		if(ret) for(i in byRef) print "    byRef["i"]("byRef[i]")" >DBG
+	}
+	return ret
+}
+
+function is_pattern(n, s) { #[[[2
+	if(1 == n) {
+		return index(s, "</Directory>") && index(s, "</Layout>") && index(s,"</Menuname>")
+	} else if (2 == n) {
+		return index(s, "</Directory>") && !index(s, "</Layout>") && index(s,"</Category>")
+	} else if (3 == n) {
+		return !index(s, "</Directory>") && index(s, "</Layout>") && index(s,"</Category>")
+	} else {
+		return 0
+	}
+}
+
+function implode_tag(tag, sep, xml,      rx) { #[[[2
+	rx = "[[:space:]]*<"tag">|</"tag">[[:space:]]*"
+	categories = a[2]
+	gsub(rx, sep, xml)
+	gsub(sep"+", sep, xml)
+	return xml
+}
+
+function add_search_entry(      ) # [[[2
+{
+	print "\n# Search App"
+	print "if ?= $SEARCH_APP_"
+	print "  Item = " IT_search
+	print "  Tooltip = " TT_search " $SEARCH_APP_"
+	print "  if ?= $SHOW_ICON_"
+	print "    icon = gtk-find"
+	print "  endif"
+	print "  cmd = env -u @exclude@ $SEARCH_APP_"
+	print "endif"
+}
+
+function add_wine_submenu() # [[[2
+{
+	# Create suitable dirfile
+	dirfile = CACHE_DIR "/folder.directory"
+	print "[Desktop Entry]\nType=Directory" > dirfile
+	print "Icon=folder" > dirfile
+	close(dirfile)
+
+	print "\n# Wine submenu\nlauncherdirfile="
+	print "if = [ -d \"$WINEDIR_\" ] && echo 1 || echo 0"
+	print "  configure = launchernullcategory"
+	print "  submenu = _Wine"
+	print "  if ?= $SHOW_ICON_"
+	print "    icon = 1CD8_rundll32.0"
+	print "  endif"
+	print "  launcherdirfile = "dirfile
+	print "  launchersub=$WINEDIR_"
+	print "  endsubmenu # _Wine"
+	print "  configure = nolaunchernullcategory"
+	print "  separator"
+	print "endif"
+}
+
+function add_activation_submenu(      dirfile) # [[[2
+{
+	# Create suitable dirfile
+	dirfile = CACHE_DIR "/activation.directory"
+	print "[Desktop Entry]\nType=Directory" > dirfile
+	print "Icon=gtk-media-previous" > dirfile
+	print "Name=" IT_activations > dirfile
+	print "Comment=" TT_activations > dirfile
+	print "Categories=NULL" > dirfile
+	close(dirfile)
+
+	print "\n#Recent submenu\nlauncherdirfile="
+	print "if ?= $ACTIVATION_SUBMENU_"
+	print "  launchersubmenu = "dirfile
+	print "  launcherdirfile = "dirfile
+	print "  include = $ACTIVATION_LOGFILE_"
+	print "  endsubmenu # "dirfile
+	print "  #separator"
+	print "endif"
+}
+
+function add_fdcp803_submenu(      s, rs, x, outf) # [[[2
+{
+	if (0 < (getline s < (x = "/etc/fatdog-version"))) {
+		close(x)
+	}
+	if (s +0 < 803) {
+		return -1 # Fatdog64 version too old or not on Fatdog64
+	}
+
+	inclf = CACHE_DIR "/fdcp.gtkmenuplus"
+	print "\n# Fatdog64 control-panel submenu"
+	print "if ?= $CONTROL_PANEL_SUBMENU_"
+	print "  launcherdirfile="
+	print "  configure = nolaunchernodisplay launchernullcategory"
+	print "  submenu = " IT_fdcp
+	print "  tooltip = " TT_fdcp
+	print "  if ?= $SHOW_ICON_"
+	print "    icon = /usr/share/pixmaps/midi-icons/controlpanel48.png"
+	print "  endif"
+	print "  if ?= $SELECTION_HOTKEY_"
+	print "    format = mnemonic=\"1\""
+	print "  endif"
+	print "  include = "inclf
+	print "  endsubmenu"
+	print "  configure = launchernodisplay nolaunchernullcategory"
+	print "endif"
+
+	if (0 <= (getline s < inclf)) {
+		close(inclf)
+	}
+	else
+	{
+		rs = RS; RS = "\x1\x2\x3"
+		x = "fatdog-control-panel.sh --menu --menu-export-to=-"
+		x | getline s
+		close(x)
+		RS = rs
+
+		if (s) {
+			sub(/^.*\niconsize=[[:digit:]]+\n/, "", s) # discard initialization header
+			print "\n# Fatdog64 control-panel menu\n" > inclf
+			print "configure = endsubmenu" > inclf
+			print s > inclf
+			close(inclf)
+		}
+	}
+}
+
+function add_no_category_submenu(      dirfile) # [[[2
+{
+	# Create suitable dirfile
+	dirfile = CACHE_DIR "/no_category.directory"
+	print "[Desktop Entry]\nType=Directory" > dirfile
+	print "Icon=folder" > dirfile
+	print "Name=" IT_no_category > dirfile
+	print "Comment=" TT_no_category > dirfile
+	print "Categories=NULL" > dirfile
+	close(dirfile)
+
+	print "\n# Uncategorized apps submenu\nlauncherdirfile="
+	print "if ?= $NO_CATEGORY_SUBMENU_"
+	print "  configure = nolaunchernodisplay launchernullcategory"
+	print "  launchersubmenu = "dirfile
+	print "  launcherdirfile = "dirfile
+	print "  launcher=$Top_"
+	print "  endsubmenu # "dirfile
+	print "  configure = launchernodisplay nolaunchernullcategory"
+	print "  #separator"
+	print "endif"
+}
+
+function add_this_menu_submenu(      it1, it0, tt1, tt0) # [[[2
+{
+	print "\n# gmenu3 Menu Options\nlauncherdirfile=" #[[[3]]]
+	print "submenu = " IT_this_menu
+	print "tooltip = " TT_this_menu
+	print "if ?= $SHOW_ICON_"
+	print "  icon = gtk-preferences"
+	print "endif"
+	print "item = gmenu3 $VERSION_ "IT_hover_over
+	print "tooltip = " TT_hover_over "$CONFIG_"
+	print "separator"
+	print_toggle_preference("IGNORE_NODISPLAY", IT_concealed, TT_concealed)
+	print_toggle_preference("CACHE_MENU", IT_cache, TT_cache)
+	print_toggle_preference("SHOW_ICON", IT_showico, TT_showico)
+	print_toggle_preference("ACTIVATION_SUBMENU", IT_activ, TT_activ)
+	print_toggle_preference("NO_CATEGORY_SUBMENU", IT_uncat_app, TT_uncat_app)
+	print "endsubmenu # "IT_this_menu # [[[3]]]
+}
+
+function print_toggle_preference(varname, it, tt) { # [[[2
+	print "if ?= $"varname"_\nelse"
+	print "  item = " IT_unchecked it
+	print "  tooltip = " tt
+	print "  if ?= $SHOW_ICON_"
+	print "    icon ="
+	print "  endif"
+	print_toggle_cmd(varname, 1)
+	print "endif"
+
+	print "if ?= $"varname"_"
+	print "  item = " IT_checked it
+	print "  tooltip = " tt
+	print "  if ?= $SHOW_ICON_"
+	print "    icon ="
+	print "  endif"
+	print_toggle_cmd(varname, 0)
+	print "endif"
+}
+
+function print_toggle_cmd(name, value) # [[[2
+{
+	printf "%s", "  cmd = sed -i" " -e \x27#@exclude@\x27"
+	printf "%s", " -e \x27/^" name "=/{s/=.*/=" gtkm_bool(value) "/}\x27"  # CONFIG
+	printf "%s", " -e \x27/^" name "_=/{s/=.*/=\\x22" gtkm_bool(value) "\\x22/}\x27"  # vars.gtkmenuplus
+	print " \x27$CONFIG_\x27 ./vars.gtkmenuplus"
+}
+
+function gtkm_bool(shval) { # [[[2
+	# shval is a shell variable value in the $CONFIG file. Its type is
+	# "Boolean". TRUE is encoded as "1" / "yes" / "true", and FALSE with
+	# any other value ($CONFIG conveniently uses shval empty for FALSE).
+	# We convert shval to be consumed by the `if =? VAL` gtkmenuplus directive,
+	# which is FALSE when VAL is empty, and TRUE otherwise.
+	return (shval ~ /1|yes|true/) ? "1" : "" # => VAL
+}
+
+function find_first_filename(filename,      an, a, ai, buf) { # [[[2
+	# Within the menu layout file, <Filename>s are relative to the
+	# $DESKTOP_FILE_DIRS_EXIST list of directories. Here we return
+	# `launcher=` with colon-separated pathnames, which will find
+	# the first file named `filename` across the list. Note that
+	# the caller sets configure=launcherlistfirst.
+	an = split(getv("DESKTOP_FILE_DIRS_EXIST"), a, ":")
+	for(ai = 1; ai <= an; ai++) {
+		buf = buf ":" a[ai] "/" filename
+	}
+	return substr(buf, 2)
+}
+
+function convert_filename_logout_submenu(filename) { # [[[2
+	# The fatdog-system-logout.menu group_file is broken in Fatdog64-710
+	# beta. All referenced files are non-existent; they were renamed and
+	# moved into their own sub-directory ".../system".
+
+	# Convert: system-foo.desktop => fulldirpath/system/foo.desktop
+	sub(/-/, "/", filename)
+	return find_first_filename(filename)
+}
+
+###gawk'
+
+
+
+
+
+
+#[[[1]]]
+
+#######################################################################
+#               FIRST RUN: CREATE AND DISPLAY THE MENU                #
+#######################################################################
+
+env LANG=C $GAWK -v "CACHE_DIR=${CACHE_DIR:?}" $enable_debug \
+	-f "$CACHE_DIR/make_menu.awk" "${MAIN_MENU_XML:?}" > "${TMPMENU:?}"
+if [ -s "$TMPMENU" ]; then
+	$GTKMENUPLUS -f "$TMPMENU"
+
+	chmod +x "$TMPMENU"
+	if [ -z "$DEBUG" ]; then
+		rm -f "$CACHE_DIR/make_menu.awk" "$namef" "$realf"
+	fi
+fi
+
+# vim: tabstop=2 foldmarker=[[[,]]]:
