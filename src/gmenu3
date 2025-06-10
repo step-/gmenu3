@@ -388,6 +388,7 @@ END {
 
 	makelinks = "command -p "MAKESYMLINKS" -f"
 	ndir = 0
+	named = prev_named = ""
 	for (i = 1; i <= nR[0]; i++) {
 		realf = R[i, 0]
 		namef = R[i, 1]
