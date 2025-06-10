@@ -12,7 +12,7 @@
 # [=903] Preinstalled in Fatdog64-903.
 # [>903] Preinstalled in the Fatdog64 version coming after 903.
 
-VERSION=1.0.0
+VERSION=1.0.1
 
 AWK=${AWK:-gawk}    # use POSIX awk + '\x' escapes (in mawk and bb awk)
 GAWK=${GAWK:-gawk}  # use gawk-only extension (not in mawk nor bb awk)
