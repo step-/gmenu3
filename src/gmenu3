@@ -551,7 +551,7 @@ if ! [ -s "${CACHE_DIR:?}/i18n" ]; then #[[[2
 	gettext -es > "$CACHE_DIR/i18n" \
 "      (hover over here)\n" \
 "For help on the settings below, read the tooltips. These and more settings persist in your configuration file. You can edit the file: \n" \
-"✅\n" \
+"✔\n" \
 "   \n" \
 "Search _/\n" \
 "Open a search app:\n" \
